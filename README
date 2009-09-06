@@ -1,0 +1,270 @@
+Dennis Blöte
+http://dennisbloete.de
+mail@dennisbloete.de
+
+Draft for the iPhone Recipes Book, version 0.1 (08/28/2009)
+
+
+Authentication handling
+=======================
+
+Problem
+-------
+Most applications that deal with users registered on a backend (like webapps) are likely to verify
+the user credentials. This recipe explains how to extract the authentication functionality that
+handles the workflow of prompting the user for credentials and verifying them at the backend. 
+
+
+
+Solution
+--------
+A separate (Modal View) Controller that acts as the apps AuthenticationController and gets called by
+other controllers. This controller encapsulates the authentication logic so that it is cleanly separated
+from the rest of the app. The provided code is compatible for all iPhone OS from 2.0 on.
+
+The basic procedure will work like this: The app looks for previously stored credentials and uses them to
+authenticate the user. If there are no stored credentials, the user gets prompted for his username and
+password. After that the backend gets called and we try to authenticate: In case of success the credentials
+get saved, otherwise the user gets alerted and is prompted for the username and password again.
+
+To start, create a new UIViewController subclass called AuthenticationController and let Xcode generate an
+accompanying XIB file. The XIB will contain the login form with UITextFields for the username and password,
+as well as a submit and cancel button.
+
+The interface for the AuthenticationController will look like this:
+
+//----- AuthenticationController.h -----
+
+#define kUsernameDefaultsKey @"username"
+#define kPasswordDefaultsKey @"password"
+
+@interface AuthenticationController : UIViewController {
+  @private
+	  id target;
+	  SEL selector;
+	  UIViewController *viewController;
+	  UIActionSheet *authSheet;
+	  NSString *username;
+	  NSString *password;
+	  IBOutlet UITextField *usernameField;
+	  IBOutlet UITextField *passwordField;
+	  IBOutlet UIButton *submitButton;
+	  IBOutlet UIButton *cancelButton;
+}
+ 
+@property (nonatomic, retain) NSString *username;
+@property (nonatomic, retain) NSString *password;
+ 
+- (id)initWithTarget:(id)theTarget andSelector:(SEL)theSelector andViewController:(UIViewController *)viewController;
+- (void)authenticate;
+- (IBAction)submit:(id)sender;
+- (IBAction)cancel:(id)sender;
+ 
+@end
+
+//----- AuthenticationController.h -----
+
+The header file contains two macros which define the keys for saving and restoring the username and password.
+It defines the outlets for the text fields and buttons that need to be connected in Interface Builder. You also
+need to wire up the buttons with the appropriate actions called submit and cancel.
+
+The AuthenticationController gets initalized with a target, selector and view controller. The target is the view
+controller or app delegate that holds a reference to the AuthenticationController and receives the selector after
+the authentication process is finished. The passed view controller is the one that brings up the login view as a
+moal view controller.
+
+Before we will have a look at the implementation, lets examine how this will be used by the target - in this case
+an instance of an UIApplicationDelegate:
+
+//----- AuthAppDelegate.m -----
+
+- (void)authenticate {
+	authController = [[AuthenticationController alloc] initWithTarget:self 
+	                                                      andSelector:@selector(authenticationSucceeded:)
+	                                                andViewController:navigationController];
+	[authController authenticate];
+}
+
+- (void)authenticationSucceeded:(BOOL)success {
+	NSLog(@"Authentication succeeded: %@!", success ? @"YES" : @"NO");
+	[authController release];
+}
+
+//----- AuthAppDelegate.m -----
+
+The AuthAppDelegate should hold a reference to an instance of the AuthenticationController and implement two
+methods that deal with the authentication: The authenticate method initializes an AuthenticationController with
+the AuthAppDelegate as target and the authenticationSucceeded method as selector. This selector will receive a
+boolean argument which tells us whether the authentication succeeded. The view controller is the root view controller
+of the app.
+
+After initializing the AuthenticationController we ask the instance to start an authentication process. If the 
+request cannot be verified directly, the login screen will appear. In any case the authentication will result in
+a call to the authenticationSucceeded: method which was passed as the selector to the AuthenticationController.
+
+Let's have a look at the authentication workflow: First of all there are some private methods that will be used
+internally.
+
+//----- AuthenticationController.m -----
+
+@interface AuthenticationController ()
+- (void)failWithMessage:(NSString *)theMessage;
+- (void)startAuthentication;
+- (void)finishAuthenticationWithSuccess:(BOOL)success;
+- (void)presentLogin;
+- (void)dismissLogin;
+- (void)showAuthenticationSheet;
+- (void)dismissAuthenticationSheet;
+@end
+
+
+@implementation AuthenticationController
+
+@synthesize username, password;
+
+- (id)initWithTarget:(id)theTarget andSelector:(SEL)theSelector andViewController:(UIViewController *)theViewController {
+	[super initWithNibName:@"Authentication" bundle:nil];
+	NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+	self.username = [defaults stringForKey:kUsernameDefaultsKey];
+	self.password = [defaults stringForKey:kPasswordDefaultsKey];
+	target = theTarget;
+	selector = theSelector;
+	viewController = theViewController;
+	return self;
+}
+
+//----- AuthenticationController.m -----
+
+The initializer loads the XIB file that was created along with the controller and tries to fetch the username and
+password from the NSUserDefaults. The references are set without retaining the instances.
+
+//----- AuthenticationController.m -----
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+	usernameField.text = username;
+	passwordField.text = password;
+}
+
+- (void)dealloc {
+	[usernameField release];
+	[passwordField release];
+	[submitButton release];
+	[cancelButton release];
+	[username release];
+	[password release];
+  [super dealloc];
+}
+
+- (IBAction)submit:(id)sender {
+	self.username = usernameField.text;
+	self.password = passwordField.text;
+	[self authenticate];
+}
+
+- (IBAction)cancel:(id)sender {
+	[self finishAuthenticationWithSuccess:NO];
+}
+
+- (void)authenticate {
+	if (username.length > 0 && password.length > 0) {
+		[self startAuthentication];
+	} else {
+		[self failWithMessage:@"Please enter your username and password"];
+	}
+}
+
+- (void)startAuthentication {
+	[self showAuthenticationSheet];
+	NSURL *url = [NSURL URLWithString:@"http://twitter.com/account/verify_credentials.xml"];
+	NSURLRequest *request = [NSURLRequest requestWithURL:url];
+	[NSURLConnection connectionWithRequest:request delegate:self];
+}
+
+//----- AuthenticationController.m -----
+
+The authenticate method verifies that the username and password fields are not left blank and starts the authentication
+request. To keep it simple we will use a NSURLConnection that will perform a HTTP Basic Auth. The following methods are
+helper methods and their names describe most of their functionality:
+
+//----- AuthenticationController.m -----
+
+- (void)failWithMessage:(NSString *)theMessage {
+	[self dismissAuthenticationSheet];
+	[self presentLogin];
+	[usernameField becomeFirstResponder];
+	UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"" message:theMessage delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil];
+	[alert show];
+	[alert release];
+}
+
+- (void)showAuthenticationSheet {
+	authSheet = [[UIActionSheet alloc] initWithTitle:@"Authenticating, please wait..." delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+	UIView *currentView = viewController.modalViewController ? viewController.modalViewController.view : viewController.view;
+	[authSheet showInView:currentView];
+	[authSheet release];
+}
+
+- (void)dismissAuthenticationSheet {
+	[authSheet dismissWithClickedButtonIndex:0 animated:YES];
+	authSheet = nil;
+}
+
+- (void)presentLogin {
+	if (viewController.modalViewController == self) return;
+	[viewController presentModalViewController:self animated:YES];
+}
+
+- (void)dismissLogin {
+	if (viewController.modalViewController != self) return;
+	[viewController dismissModalViewControllerAnimated:YES];
+}
+
+- (void)finishAuthenticationWithSuccess:(BOOL)success {
+	if (success) { // save credentials
+		NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+		[defaults setValue:username forKey:kUsernameDefaultsKey];
+		[defaults setValue:password forKey:kPasswordDefaultsKey];
+		[defaults synchronize];
+	}
+	[self dismissAuthenticationSheet];
+	[self dismissLogin];
+	[target performSelector:selector withObject:success];
+}
+
+//----- AuthenticationController.m -----
+
+In case of success the finishAuthenticationWithSuccess: method saves the users credentials. After that the selector gets
+called with the boolean value telling the target whether the authentication was successful or not. The following part are
+NSURLConnection delegation methods that perform the verification. Depending on the scenario in your application this
+part is likely to be replaced by what you are actually using to verifythe users credentials.
+
+//----- AuthenticationController.m -----
+
+- (void)connection:(NSURLConnection *)connection didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge {
+	if ([challenge previousFailureCount] == 0) {
+		NSURLCredential *credential = [[NSURLCredential alloc] initWithUser:username password:password persistence:NSURLCredentialPersistenceForSession];
+		[challenge.sender useCredential:credential forAuthenticationChallenge:challenge];
+		[credential release];
+	} else {
+		[challenge.sender cancelAuthenticationChallenge:challenge];
+	}
+}
+- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+	[self finishAuthenticationWithSuccess:YES];
+}
+
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+	[self failWithMessage:@"Please ensure that you are connected to the internet and that your username and password are correct"];
+}
+
+@end
+
+//----- AuthenticationController.m -----
+
+
+Discussion
+----------
+
+This example stores the credentials in the NSUserDefaults and the password gets saved in clear text. You should think
+about extending the code to use the keychain, so that the password is stored securely.
